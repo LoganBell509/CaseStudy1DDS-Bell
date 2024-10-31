@@ -1,0 +1,550 @@
+---
+title: "Project 1"
+author: "Logan Bell"
+date: "2024-10-13"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+# Setting up data
+Lots of libraries from all the units just to be safe
+```{r}
+library(mvtnorm)
+library(e1071)
+library(tidyr)
+library(plyr)
+library(jsonlite)
+library(dplyr)
+library(tidyverse)
+library(caret)
+library(fastDummies)
+library(caret)
+library(class)
+library(plotly)
+library(reshape2)
+
+projectdata <- read.csv("C:/Users/logan/Downloads/CaseStudy1-data.csv")
+#Setting up Role Tenure Ratio
+projectdata$RoleTenureRatio <- projectdata$YearsInCurrentRole / projectdata$YearsAtCompany
+#Checking all of the different job roles
+unique(projectdata["JobRole"])
+#Turning everything into numeric data and one hot encoding for big correlation matrix
+char_columns <- names(projectdata)[sapply(projectdata, is.character)]
+fixeddata <- dummy_cols(projectdata, select_columns = char_columns, remove_first_dummy = TRUE, remove_selected_columns = TRUE)
+#Checking # of Yes
+sum(projectdata$Attrition == "Yes")
+```
+
+# Figuring out columns to drop
+```{r}
+#First run of correlation matrix
+corr_mat <- round(cor(fixeddata),4)
+```
+```{r}
+#increasing max print for all rows/columns
+options(max.print = 10000)
+zero_variance_columns <- sapply(fixeddata, function(col) sd(col, na.rm = TRUE) == 0)
+
+print(names(fixeddata)[zero_variance_columns])
+
+#Removing the EmployeeCount, StandardHours, and Over18 columns because they all have one value so there are no more zero standard deviation columns
+fixeddata <- fixeddata[, !zero_variance_columns]
+corr_mat <- round(cor(fixeddata),4)
+print(corr_mat)
+```
+
+```{r}
+#Making a correlation matrix image for the powerpoint
+cor_matrix <- round(cor(fixeddata, use = "complete.obs"),4)
+cor_matrix_melt <- melt(cor_matrix)
+cor_plot <- ggplot(cor_matrix_melt, aes(Var1, Var2, fill = value)) +
+  geom_tile() +
+  scale_fill_gradient2(low = "red", high = "green", mid = "white", midpoint = 0, limit = c(-1,1)) +
+  theme_minimal() +
+  labs(title = "Correlation Matrix", x = "Variable", y = "Variable") +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+ggsave("correlation_matrix.png", plot = cor_plot, width = 8, height = 6)
+```
+
+
+Preliminary Naive Bayes testing with three high-correlation factors
+```{r}
+#Setting a consistent seed
+set.seed(4)
+#Making a basic naive Bayes model with the Job Role, Number of Companies Worked, and Overtime columns
+trainIndices = sample(seq(1:length(projectdata$ID)),round(.7*length(projectdata$ID)))
+traindata = projectdata[trainIndices,]
+testdata = projectdata[-trainIndices,]
+model1 = naiveBayes(traindata[,c(15, 16, 30)],traindata$Attrition)
+table(predict(model1,traindata[,c(15, 16, 30)]),traindata$Attrition)
+CM = confusionMatrix(table(predict(model1,traindata[,c(15, 16, 30)]),traindata$Attrition))
+CM
+```
+```{r}
+#Changing the positive class to Yes to make more sense
+set.seed(4)
+projectdata$Attrition <- relevel(factor(projectdata$Attrition), ref = "Yes")
+trainIndices = sample(seq(1:length(projectdata$ID)),round(.7*length(projectdata$ID)))
+traindata = projectdata[trainIndices,]
+testdata = projectdata[-trainIndices,]
+model1 = naiveBayes(traindata[,c(15, 16, 20)],traindata$Attrition)
+table(predict(model1,traindata[,c(15, 16, 20)]),traindata$Attrition)
+CM = confusionMatrix(table(predict(model1,traindata[,c(15, 16, 20)]),traindata$Attrition))
+CM
+```
+Tried doing KNN, realized it wouldn't work because of the categorical data
+```{r}
+char_columns2 <- names(traindata)[sapply(traindata, is.character)]
+traindatafixed <- dummy_cols(traindata, select_columns = char_columns2, remove_first_dummy = TRUE, remove_selected_columns = TRUE)
+classifications = knn.cv(traindatafixed[,c(3,6)],traindatafixed$Attrition, k =3)
+confusionMatrix(classifications,as.factor(traindatafixed$Attrition))
+```
+Running a loop through all of the possible three-factor combinations to select the highest-accuracy combination
+```{r}
+#Splitting off Attrition from the rest of the other factors
+all_columns <- colnames(projectdata)
+target_column <- "Attrition"
+#Getting all of the combinations using the combn function
+column_combinations <- combn(all_columns[all_columns != target_column], 3, simplify = FALSE)
+#Storing combination and highest accuracy into here
+best_combination <- NULL
+best_accuracy <- 0
+#Looping through the combinations
+for (combination in column_combinations) {
+  formula <- as.formula(paste(target_column, "~", paste(combination, collapse = "+")))
+  set.seed(4)
+  trainIndex <- createDataPartition(projectdata$Attrition, p = .7, list = FALSE)
+  traindata <- projectdata[trainIndex, ]
+  testdata <- projectdata[-trainIndex, ]
+  model <- naiveBayes(formula, data = traindata)
+  predictions <- predict(model, testdata)
+  #Using a raw calculation of accuracy instead of using a confusion matrix
+  accuracy <- sum(predictions == testdata$Attrition) / nrow(testdata)
+  if (accuracy > best_accuracy) {
+    best_accuracy <- accuracy
+    best_combination <- combination
+  }
+}
+
+# Print the best combination of columns and the corresponding accuracy
+cat("Best combination of columns:", paste(best_combination, collapse = ", "), "\n")
+cat("Best accuracy:", best_accuracy, "\n")
+```
+First Model:
+Using the three factors picked by the combination: Number of Companies Worked, and Overtime
+```{r}
+#Setting a seed for the future so there's no shenanigans
+set.seed(4)
+projectdata$Attrition <- relevel(factor(projectdata$Attrition), ref = "Yes")
+trainIndices = sample(seq(1:length(projectdata$ID)),round(.7*length(projectdata$ID)))
+traindata = projectdata[trainIndices,]
+testdata = projectdata[-trainIndices,]
+model1 = naiveBayes(traindata[,c(17, 22, 24)],traindata$Attrition)
+table(predict(model1,testdata[,c(17, 22, 24)]),testdata$Attrition)
+CM = confusionMatrix(table(predict(model1,testdata[,c(17, 22, 24)]),testdata$Attrition))
+CM
+```
+
+Really bad sensitivity, most likely due to the drastic difference in sample sizes for yes and no. We will need to change the threshold to improve the sensitivity metric to at least 60%.
+I tested various values manually, and found 0.15 has the best total metrics. I will make a model that can calculate the total metrics for each threshold to find the best one in terms of accuracy, sensitivity, and specificity.
+```{r}
+set.seed(4)
+projectdata$Attrition <- relevel(factor(projectdata$Attrition), ref = "Yes")
+trainIndices = sample(seq(1:length(projectdata$ID)), round(.7 * length(projectdata$ID)))
+traindata = projectdata[trainIndices, ]
+testdata = projectdata[-trainIndices, ]
+model1 = naiveBayes(traindata[, c(17, 22, 24)], traindata$Attrition)
+predicted_probs = predict(model1, testdata[, c(17, 22, 24)], type = "raw")
+threshold <- 0.15
+predicted_classes <- ifelse(predicted_probs[, "Yes"] > threshold, "Yes", "No")
+predicted_classes <- factor(predicted_classes, levels = levels(testdata$Attrition))
+confusion_matrix = table(predicted_classes, testdata$Attrition)
+print(confusion_matrix)
+CM = confusionMatrix(confusion_matrix)
+print(CM)
+```
+
+As expected, 0.15 does have the highest total metrics. This template of searching for the best threshold and obtaining its results will be used for future versions of the model.
+```{r}
+set.seed(4)
+
+projectdata$Attrition <- relevel(factor(projectdata$Attrition), ref = "Yes")
+#Changing train/test to 75% for more accuracy
+trainIndices = sample(seq(1:length(projectdata$ID)), round(.75 * length(projectdata$ID)))
+traindata = projectdata[trainIndices, ]
+testdata = projectdata[-trainIndices, ]
+
+model1 = naiveBayes(traindata[, c(17, 22, 24)], traindata$Attrition)
+
+predicted_probs = predict(model1, testdata[, c(17, 22, 24)], type = "raw")
+bestthreshold <- NA
+bestmetrics <- list(accuracy = 0, sensitivity = 0, specificity = 0)
+thresholds <- seq(0.01, 0.99, by = 0.01)
+#setting up accuracies and totals for graphs  
+accuracies <- numeric(length(thresholds))
+totals <- numeric(length(thresholds))
+#For loop to add the total threshold as well as all three metrics into a list if that threshold meets the criteria given. 
+for (i in seq_along(thresholds)) {
+  threshold <- thresholds[i]
+  predicted_classes <- ifelse(predicted_probs[, "Yes"] > threshold, "Yes", "No")
+  predicted_classes <- factor(predicted_classes, levels = levels(testdata$Attrition))
+  confusion_matrix <- table(predicted_classes, testdata$Attrition)
+  CM <- confusionMatrix(confusion_matrix, positive = "Yes")
+  
+  accuracy <- CM$overall['Accuracy']
+  sensitivity <- CM$byClass['Sensitivity']
+  specificity <- CM$byClass['Specificity']
+  
+  accuracies[i] <- accuracy
+  totals[i] <- (accuracy + sensitivity + specificity)
+  
+  #Set the accuracy really high to see how the total goes for all thresholds because if it is set low, it will go for the first threshold which means the criteria and stop.
+  if (accuracy > 0.9 && sensitivity > 0.6 && specificity > 0.6) {
+    bestthreshold <- threshold
+    bestmetrics <- list(accuracy = accuracy, sensitivity = sensitivity, specificity = specificity)
+    break 
+  }
+}
+#Making the printing look pretty
+if (!is.na(bestthreshold)) {
+  print(paste("Best threshold:", bestthreshold))
+  print(paste("Best accuracy:", bestmetrics$accuracy))
+  print(paste("Best sensitivity:", bestmetrics$sensitivity))
+  print(paste("Best specificity:", bestmetrics$specificity))
+} else {
+  print("No threshold found that meets the criteria.")
+}
+#Making plots comparing the threshold and accuracy as well as the total metrics by threshold. The latter is interactive so I can see the actual total.
+threshold_data <- data.frame(threshold = thresholds, accuracy = accuracies)
+threshold_data2 <- data.frame(threshold = thresholds, total = totals)
+ggplot(threshold_data, aes(x = threshold, y = accuracy)) +
+  geom_line(color = "red") +
+  labs(title = "Threshold vs. Accuracy", x = "Threshold", y = "Accuracy")
+gg <- ggplot(threshold_data2, aes(x = threshold, y = total)) +
+  geom_line(color = "blue") +
+  labs(title = "Threshold vs. Total", x = "Threshold", y = "Total")
+#turning the threshold plot into an interactive one
+interactive_plot <- ggplotly(gg)
+interactive_plot
+total = bestmetrics$accuracy + bestmetrics$sensitivity + bestmetrics$specificity
+print(total)
+```
+Second Model: All of the high-correlation factors and those found to have the best combination.
+From the first model: Job Role, Number of Companies Worked, Overtime
+Other high-correlation factors chosen via the large correlation matrix: Job Involvement, Job Level, Marital Status, Monthly Income, Stock Option Level, Total Working Years, and Years in Current Role
+These factors make sense when you think about them. As seen in the EDA below, the role and level of one's job seems to have an impact on attrition (there are definitely differences between roles and managerial positions seem to have less attrition). The number of companies worked should have an impact on attrition because those who moved around a lot before would be likely to move again. Overtime would have an impact on attrition because people who work more for the company are more likely to stay at the job for both loyalty and extra pay reasons. The loyalty to the company is also a reason why Job Involvement is a factor, people who are more involved with their jobs are more likely to stay. The pay is a reason why Monthly Income and Stock Options are important factors as well. The number of years in a person's current role also has an impact because people who stay in a role for too long may want to move for a better option, but on the flip side some people may want to move jobs quickly so they can move up the ranks quickly, so this factor should be important. For total working years and marital status, as people get older and start families they will want to have more stability so they will be less likely to move jobs, so these two are very important factors as well.
+```{r}
+set.seed(4)
+
+projectdata$Attrition <- relevel(factor(projectdata$Attrition), ref = "Yes")
+
+trainIndices = sample(seq(1:length(projectdata$ID)), round(.75 * length(projectdata$ID)))
+traindata = projectdata[trainIndices, ]
+testdata = projectdata[-trainIndices, ]
+
+model1 = naiveBayes(traindata[, c(15, 16, 17, 19, 20, 22, 24, 29, 30, 34)], traindata$Attrition)
+
+predicted_probs = predict(model1, testdata[, c(15, 16, 17, 19, 20, 22, 24, 29, 30, 34)], type = "raw")
+bestthreshold <- NA
+bestmetrics <- list(accuracy = 0, sensitivity = 0, specificity = 0)
+thresholds <- seq(0.01, 0.99, by = 0.01)
+accuracies <- numeric(length(thresholds))
+totals <- numeric(length(thresholds))
+
+for (i in seq_along(thresholds)) {
+  threshold <- thresholds[i]
+  predicted_classes <- ifelse(predicted_probs[, "Yes"] > threshold, "Yes", "No")
+  predicted_classes <- factor(predicted_classes, levels = levels(testdata$Attrition))
+  confusion_matrix <- table(predicted_classes, testdata$Attrition)
+  CM <- confusionMatrix(confusion_matrix, positive = "Yes")
+  
+  accuracy <- CM$overall['Accuracy']
+  sensitivity <- CM$byClass['Sensitivity']
+  specificity <- CM$byClass['Specificity']
+  
+  accuracies[i] <- accuracy
+  totals[i] <- (accuracy + sensitivity + specificity)
+  #Accuracy is 0.83, trying to find the highest accuracy possible because if it is set lower it will just accept a lower threshold with lower total metrics
+  if (accuracy > 0.83 && sensitivity > 0.6 && specificity > 0.6) {
+    bestthreshold <- threshold
+    bestmetrics <- list(accuracy = accuracy, sensitivity = sensitivity, specificity = specificity)
+    break 
+  }
+}
+#Making the printing look pretty
+if (!is.na(bestthreshold)) {
+  print(paste("Best threshold:", bestthreshold))
+  print(paste("Best accuracy:", bestmetrics$accuracy))
+  print(paste("Best sensitivity:", bestmetrics$sensitivity))
+  print(paste("Best specificity:", bestmetrics$specificity))
+} else {
+  print("No threshold found that meets the criteria.")
+}
+threshold_data <- data.frame(threshold = thresholds, accuracy = accuracies)
+threshold_data2 <- data.frame(threshold = thresholds, total = totals)
+ggplot(threshold_data, aes(x = threshold, y = accuracy)) +
+  geom_line(color = "red") +
+  labs(title = "Threshold vs. Accuracy", x = "Threshold", y = "Accuracy")
+gg <- ggplot(threshold_data2, aes(x = threshold, y = total)) +
+  geom_line(color = "blue") +
+  labs(title = "Threshold vs. Total", x = "Threshold", y = "Total")
+interactive_plot <- ggplotly(gg)
+interactive_plot
+total = bestmetrics$accuracy + bestmetrics$sensitivity + bestmetrics$specificity
+print(total)
+```
+Trying out the best combination with four variables just to see which variables show up. Age, Department, and Marital Status are here along with Overtime. Since Marital Status and Overtime are already in the model, Age and Department will be tested to see if they increase the metrics of the model.
+```{r}
+all_columns <- colnames(projectdata)
+
+# Identify the target column
+target_column <- "Attrition"  # Assuming "Attrition" is your target variable
+
+# Get all combinations of three columns
+column_combinations <- combn(all_columns[all_columns != target_column], 4, simplify = FALSE)
+
+# Initialize variables to store the best results
+best_combination <- NULL
+best_accuracy <- 0
+
+# Loop through all combinations
+for (combination in column_combinations) {
+  
+  # Create the formula for Naive Bayes
+  formula <- as.formula(paste(target_column, "~", paste(combination, collapse = "+")))
+  
+  # Split the data into training and testing sets (if needed)
+  set.seed(4)
+  trainIndex <- createDataPartition(projectdata$Attrition, p = .7, list = FALSE)
+  traindata <- projectdata[trainIndex, ]
+  testdata <- projectdata[-trainIndex, ]
+  
+  # Fit the Naive Bayes model on the training data using the current combination
+  model <- naiveBayes(formula, data = traindata)
+  
+  # Make predictions on the testing data
+  predictions <- predict(model, testdata)
+  
+  # Calculate accuracy
+  accuracy <- sum(predictions == testdata$Attrition) / nrow(testdata)
+  
+  # If the current accuracy is better than the best so far, update the best combination
+  if (accuracy > best_accuracy) {
+    best_accuracy <- accuracy
+    best_combination <- combination
+  }
+}
+
+# Print the best combination of columns and the corresponding accuracy
+cat("Best combination of columns:", paste(best_combination, collapse = ", "), "\n")
+cat("Best accuracy:", best_accuracy, "\n")
+```
+Third Model:
+I had tested the second model without each factor individually and found that some of them do not impact the metrics of the model in a positive way, so only the ones that do are included in this.
+I tested the model with the additions of Age, Years at Company, Department, and Role Tenure Ratio but none of them had a positive impact on the metrics.
+  Role Tenure Ratio not having much of an impact is probably due to Years in Current Role already being in the model, and since Years at Company didn't have a positive impact in the first place, then keeping just Years in Current Role instead of replacing it with Role Tenure Ratio makes the most sense.
+Original optimal model: Total metrics: 2.4380 - 0.39 threshold with acc = .8303, sens = .7692, spec = .8385
+Removing Job Level: Total metrics: 2.4615 - 0.3 threshold with acc = .8257, sens = .8077, spec = .8281
+Removing Monthly Income: Total metrics: 2.4615 - 0.3 threshold with acc = .8257, sens = .8077, spec = .8281
+Removing Total Working Years: Total metrics: 2.49 - 0.49 threshold with acc = .8669, sens = .7301, spec = .8229
+Removing Monthly Income + Total Working Years: Total metrics: 2.5202 - 0.28 threshold with acc = .8532, sens = .8077, spec = .8594
+Removing Job Level, Monthly Income, and Total Working Years: same total metrics and individual metrics with a threshold of 0.23
+Therefore, for the third model, I will remove all of these factors for a streamlined, better model.
+```{r}
+#Exact same setup as the second model, just less factors, and that the train/test split was increased to 0.75 for more accuracy
+set.seed(4)
+
+projectdata$Attrition <- relevel(factor(projectdata$Attrition), ref = "Yes")
+
+trainIndices = sample(seq(1:length(projectdata$ID)), round(.75 * length(projectdata$ID)))
+traindata = projectdata[trainIndices, ]
+testdata = projectdata[-trainIndices, ]
+
+model1 = naiveBayes(traindata[, c(15, 17, 19, 22, 24, 29, 34)], traindata$Attrition)
+
+predicted_probs = predict(model1, testdata[, c(15, 17, 19, 22, 24, 29, 34)], type = "raw")
+
+bestthreshold <- NA
+bestmetrics <- list(accuracy = 0, sensitivity = 0, specificity = 0)
+thresholds <- seq(0.01, 0.99, by = 0.01)
+accuracies <- numeric(length(thresholds))
+totals <- numeric(length(thresholds))
+
+for (i in seq_along(thresholds)) {
+  threshold <- thresholds[i]
+  predicted_classes <- ifelse(predicted_probs[, "Yes"] > threshold, "Yes", "No")
+  predicted_classes <- factor(predicted_classes, levels = levels(testdata$Attrition))
+  confusion_matrix <- table(predicted_classes, testdata$Attrition)
+  CM <- confusionMatrix(confusion_matrix, positive = "Yes")
+  
+  accuracy <- CM$overall['Accuracy']
+  sensitivity <- CM$byClass['Sensitivity']
+  specificity <- CM$byClass['Specificity']
+  
+  accuracies[i] <- accuracy
+  totals[i] <- (accuracy + sensitivity + specificity)
+  
+  if (accuracy > 0.85 && sensitivity > 0.6 && specificity > 0.6) {
+    bestthreshold <- threshold
+    bestmetrics <- list(accuracy = accuracy, sensitivity = sensitivity, specificity = specificity)
+    break 
+  }
+}
+
+if (!is.na(bestthreshold)) {
+  print(paste("Best threshold:", bestthreshold))
+  print(paste("Best accuracy:", bestmetrics$accuracy))
+  print(paste("Best sensitivity:", bestmetrics$sensitivity))
+  print(paste("Best specificity:", bestmetrics$specificity))
+} else {
+  print("No threshold found that meets the criteria.")
+}
+threshold_data <- data.frame(threshold = thresholds, accuracy = accuracies)
+threshold_data2 <- data.frame(threshold = thresholds, total = totals)
+ggplot(threshold_data, aes(x = threshold, y = accuracy)) +
+  geom_line(color = "red") +
+  labs(title = "Threshold vs. Accuracy", x = "Threshold", y = "Accuracy")
+gg <- ggplot(threshold_data2, aes(x = threshold, y = total)) +
+  geom_line(color = "blue") +
+  labs(title = "Threshold vs. Total", x = "Threshold", y = "Total")
+interactive_plot <- ggplotly(gg)
+interactive_plot
+total = bestmetrics$accuracy + bestmetrics$sensitivity + bestmetrics$specificity
+print(total)
+```
+EDA Time! (I did some of this after the model because I wanted to prioritize it)
+
+Does age have any impact on Attrition? (this was a mid-level correlation factor which was found not to have a positive impact on the second/third model and these histograms confirm that -- not a huge difference here)
+```{r}
+ggplot(projectdata, aes(x = Age)) + 
+  geom_histogram(binwidth = 5, fill = "blue", color = "white") +
+  facet_wrap(~ Attrition)
+```
+How does the years in current role impact attrition?
+Looks like they have similar trends, but those with less time in their current role look to have more of a likelihood of attrition. This factor ended up being in the final model.
+```{r}
+ggplot(projectdata, aes(x = YearsInCurrentRole)) + 
+  geom_density(binwidth = 5, fill = "blue", color = "white") +
+  facet_wrap(~ Attrition)
+```
+
+Are there any differences in the department and attrition?
+Looks like sales has higher attrition than the other two, but this factor did not end up being in the final model (it was one of the mid-level factors that had minimal impact).
+```{r}
+ggplot(projectdata, aes(x = Department, fill = Attrition)) +
+  geom_bar(position = "fill") +
+  labs(title = "Attrition Rate by Department", y = "Proportion")
+```
+
+
+Another factor of interest was travel, but it did not make the cut for the second or third versions of the model.
+```{r}
+ggplot(projectdata, aes(x = BusinessTravel, fill = Attrition)) +
+  geom_bar(position = "fill") +
+  labs(title = "Attrition Rate by Travel", y = "Proportion")
+```
+
+Doing some EDA on the Role Tenure Ratio.
+There doesn't seem to be a huge difference between the Yes and No groups here, they have similar peaks and valleys even if the magnitude of those areas are a bit different. Must be a reason why this factor did not make the cut.
+```{r}
+ggplot(projectdata, aes(x = RoleTenureRatio)) + 
+  geom_histogram(binwidth = 0.1, fill = "blue", color = "white") +
+  facet_wrap(~ Attrition)
+#tried adding this to the model, makes it worse
+```
+Job role trends, as desired by the prompt.
+Attrition rate seems to be highly impacted by the job role. Managerial positions seem to have less attrition but everything in sales has higher attrition. Sales are just high-attrition, and the differences are drastic enough that this was one of the most important factors in the model from the first to final version.
+```{r}
+ggplot(projectdata, aes(x = JobRole, fill = Attrition)) +
+  geom_bar(position = "fill") +
+  labs(title = "Attrition Rate by Job Role", y = "Proportion")
+```
+Making a box plot of the job role and role tenure ratio. Most have similar enough distributions, the only difference being the manager role having a lower median. This might be due to promotions, so employees being promoted would have more time in the company and a smaller role tenure ratio.
+```{r}
+ggplot(projectdata, aes(x = JobRole, y=RoleTenureRatio )) +
+  geom_boxplot() +
+  labs(title = "Role Tenure Ratio by Job Role")
+```
+
+```{r}
+set.seed(4)
+
+projectdata$Attrition <- relevel(factor(projectdata$Attrition), ref = "Yes")
+
+trainIndices = sample(seq(1:length(projectdata$ID)), round(.75 * length(projectdata$ID)))
+traindata = projectdata[trainIndices, ]
+testdata = projectdata[-trainIndices, ]
+
+model1 = naiveBayes(traindata[, c(17, 22, 24)], traindata$Attrition)
+
+predicted_probs = predict(model1, testdata[, c(17, 22, 24)], type = "raw")
+
+bestthreshold <- NA
+bestmetrics <- list(accuracy = 0, sensitivity = 0, specificity = 0)
+thresholds <- seq(0.01, 0.99, by = 0.01)
+accuracies <- numeric(length(thresholds))
+totals <- numeric(length(thresholds))
+
+for (i in seq_along(thresholds)) {
+  threshold <- thresholds[i]
+  predicted_classes <- ifelse(predicted_probs[, "Yes"] > threshold, "Yes", "No")
+  predicted_classes <- factor(predicted_classes, levels = levels(testdata$Attrition))
+  confusion_matrix <- table(predicted_classes, testdata$Attrition)
+  CM <- confusionMatrix(confusion_matrix, positive = "Yes")
+  
+  accuracy <- CM$overall['Accuracy']
+  sensitivity <- CM$byClass['Sensitivity']
+  specificity <- CM$byClass['Specificity']
+  
+  accuracies[i] <- accuracy
+  totals[i] <- (accuracy + sensitivity + specificity)
+  
+  if (accuracy > 0.9 && sensitivity > 0.6 && specificity > 0.6) {
+    bestthreshold <- threshold
+    bestmetrics <- list(accuracy = accuracy, sensitivity = sensitivity, specificity = specificity)
+    break 
+  }
+}
+
+if (!is.na(bestthreshold)) {
+  print(paste("Best threshold:", bestthreshold))
+  print(paste("Best accuracy:", bestmetrics$accuracy))
+  print(paste("Best sensitivity:", bestmetrics$sensitivity))
+  print(paste("Best specificity:", bestmetrics$specificity))
+} else {
+  print("No threshold found that meets the criteria.")
+}
+threshold_data <- data.frame(threshold = thresholds, accuracy = accuracies)
+threshold_data2 <- data.frame(threshold = thresholds, total = totals)
+ggplot(threshold_data, aes(x = threshold, y = accuracy)) +
+  geom_line(color = "red") +
+  labs(title = "Threshold vs. Accuracy", x = "Threshold", y = "Accuracy")
+gg <- ggplot(threshold_data2, aes(x = threshold, y = total)) +
+  geom_line(color = "blue") +
+  labs(title = "Threshold vs. Total", x = "Threshold", y = "Total")
+interactive_plot <- ggplotly(gg)
+interactive_plot
+total = bestmetrics$accuracy + bestmetrics$sensitivity + bestmetrics$specificity
+print(total)
+```
+
+```{r}
+set.seed(4)
+newdata <- read.csv("C:/Users/logan/Downloads/CaseStudy1CompSet No Attrition.csv")
+projectdata$Attrition <- relevel(factor(projectdata$Attrition), ref = "Yes")
+trainIndices = sample(seq(1:length(projectdata$ID)), round(.75 * length(projectdata$ID)))
+traindata = projectdata[trainIndices, ]
+testdata = projectdata[-trainIndices, ]
+#Without attrition, all of the columns of the new data need to go down by one
+model1 = naiveBayes(traindata[, c(15, 17, 19, 22, 24, 29, 34)], traindata$Attrition)
+predicted_probs = predict(model1, newdata[, c(14, 16, 18, 21, 23, 28, 33)], type = "raw")
+threshold <- 0.23
+predicted_classes <- ifelse(predicted_probs[, "Yes"] > threshold, "Yes", "No")
+predicted_classes <- factor(predicted_classes, levels = levels(testdata$Attrition))
+output <- data.frame(ID = newdata$ID, PredictedAttrition = predicted_classes)
+write.csv(output, "Case1PredictionsBell Attrition.csv", row.names = FALSE)
+```
+
