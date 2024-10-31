@@ -22,3 +22,6 @@ Sensitivity - 80.77%
 Specificity - 85.94%
 
 I was very surprised by how much Overtime impacted the attrition of employees, and how high the attrition rates were for the sales department.
+
+Link to my video:
+https://youtu.be/5biJ8N07jRI
